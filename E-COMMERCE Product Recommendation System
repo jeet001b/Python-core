@@ -1,0 +1,179 @@
+#GETTING NECESSARY LIBRARIES 
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.feature_extraction.text import TfidfVectorizer
+import os
+from scipy.sparse import coo_matrix
+#GENERAL SORTING AND ANALYZING OF RAW DATA
+data = pd.read_csv('/content/marketing_sample_for_walmart_com-walmart_com_product_review__20200701_20201231__5k_data (1).tsv', sep='\t')
+data = data[['Uniq Id','Product Id', 'Product Rating', 'Product Reviews Count', 'Product Category', 'Product Brand', 'Product Name', 'Product Image Url', 'Product Description', 'Product Tags']]
+data.isnull().sum()
+# removing na values
+data['Product Brand'].fillna('', inplace= True)
+data['Product Tags'].fillna('', inplace= True)
+data['Product Description'].fillna('', inplace= True)
+data['Product Reviews Count'].fillna(0, inplace= True)
+data['Product Rating'].fillna(0, inplace= True)
+data['Product Image Url'].fillna('', inplace= True)
+data['Product Category'].fillna('', inplace= True)
+data['Product Name'].fillna('', inplace= True)
+data.isnull().sum()
+#renaming the columns for the ease to use the data
+column_name_mapping = {
+    'Uniq Id': 'ID',
+    'Product Id': 'ProdID',
+    'Product Rating': 'Rating',
+    'Product Reviews Count': 'ReviewCount',
+    'Product Category': 'Category',
+    'Product Brand': 'Brand',
+    'Product Name': 'Name',
+    'Product Image Url': 'ImageURL',
+    'Product Description': 'Description',
+    'Product Tags': 'Tags',
+    'Product Contents': 'Contents'}
+data.rename(columns=column_name_mapping, inplace=True)
+data['ID']=data['ID'].str.extract(r'(\d+)').astype(float)
+data['ProdID']=data['ProdID'].str.extract(r'(\d+)').astype(float)
+#EXPLORATORY DATA ANALYSIS [EDA]
+num_user= data['ID'].nunique()
+num_items= data['ProdID'].nunique()
+num_ratings= data['Rating'].nunique()
+print(f'Number of ratings: {num_ratings}')
+print(f'Number of users: {num_user}')
+print(f'Number of items: {num_items}')
+# plotting the data on the heatmap
+heatmap_data =data.pivot_table('ID', 'Rating', aggfunc='count')
+plt.figure(figsize=(6, 10))
+sns.heatmap(heatmap_data, annot=True, fmt='g', cmap='viridis', cbar=True)
+plt.title('Heatmap of User Ratings')
+plt.xlabel('Ratings')
+plt.ylabel('User ID')
+plt.show()
+#data cleaning and tags creation
+import spacy
+from spacy.lang.en.stop_words import STOP_WORDS
+nlp = spacy.load('en_core_web_sm')
+def preprocess_text(text):
+    doc = nlp(text.lower())
+    tags = [token.text for token in doc if token.text.isalnum() and token.text not in STOP_WORDS]
+    return ', '.join(tags)
+columns_to_extract_tags_from = ['Category', 'Brand', 'Description']
+for column in columns_to_extract_tags_from:
+      data[column] =  data[column].apply(preprocess_text)
+# Concatenate the cleaned tags from all relevant columns
+data['Tags'] =data[columns_to_extract_tags_from].apply(lambda row: ', '.join(row), axis=1)
+#RATING BASE RECOMENDATION (RBR)
+avg_ratings =data.groupby(['Name','ReviewCount','Brand','ImageURL'])['Rating'].mean().reset_index()
+avg = avg_ratings.sort_values(by='Rating', ascending=False)
+avg=avg.head(10)
+rbr= avg
+rbr['Rating'] = rbr['Rating'].astype(int)
+rbr['ReviewCount'] = rbr['ReviewCount'].astype(int)
+rbr = rbr[['Name','Rating','ReviewCount', 'Brand', 'ImageURL']]
+#REASSURING DATA
+rbr.head()
+#CONTENT BASED RECOMMENDATION SYSTEM
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+tfidf_vectorizer = TfidfVectorizer(stop_words='english')
+tfidf_matrix_content = tfidf_vectorizer.fit_transform(data['Tags'])
+cosine_similarities_content = cosine_similarity(tfidf_matrix_content,tfidf_matrix_content)
+item_name = 'OPI Infinite Shine, Nail Lacquer Nail Polish, Bubble Bath'
+item_index = data[data['Name']==item_name].index[0]
+similar_items = list(enumerate(cosine_similarities_content[item_index]))
+similar_items = sorted(similar_items, key=lambda x:x[1], reverse=True)
+top_similar_items = similar_items[1:10]
+recommended_items_indics = [x[0] for x in top_similar_items]
+data.iloc[recommended_items_indics][['Name','ReviewCount','Brand']]
+#Function To Recommend Products for Content Base
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+def content_based_recommendations(data, item_name, top_n=10):
+# Check if the item name exists in the training data
+    if item_name not in data['Name'].values:
+        print(f"Item '{item_name}' not found in the training data.")
+        return pd.DataFrame()
+    # Create a TF-IDF vectorizer for item descriptions
+    tfidf_vectorizer = TfidfVectorizer(stop_words='english')
+    # Apply TF-IDF vectorization to item descriptions
+    tfidf_matrix_content = tfidf_vectorizer.fit_transform(data['Tags'])
+    # Calculate cosine similarity between items based on descriptions
+    cosine_similarities_content = cosine_similarity(tfidf_matrix_content, tfidf_matrix_content)
+    # Find the index of the item
+    item_index = data[data['Name'] == item_name].index[0]
+    # Get the cosine similarity scores for the item
+    similar_items = list(enumerate(cosine_similarities_content[item_index]))
+    # Sort similar items by similarity score in descending order
+    similar_items = sorted(similar_items, key=lambda x: x[1], reverse=True)
+    # Get the top N most similar items (excluding the item itself)
+    top_similar_items = similar_items[1:top_n+1]
+    # Get the indices of the top similar items
+    recommended_item_indices = [x[0] for x in top_similar_items]
+    # Get the details of the top similar items
+    recommended_items_details = data.iloc[recommended_item_indices][['Name', 'ReviewCount', 'Brand', 'ImageURL', 'Rating']]
+    return recommended_items_details
+# Example: Get content-based recommendations for a specific item
+item_name = 'OPI Infinite Shine, Nail Lacquer Nail Polish, Bubble Bath'
+content_based_rec = content_based_recommendations(data, item_name, top_n=8)
+content_based_rec
+#Collaborative Filtering (User Item Similarity)
+user_item_matrix = data.pivot_table(index='ID', columns='ProdID', values='Rating',aggfunc='mean').fillna(0).astype(int)
+user_similarity = cosine_similarity(user_item_matrix)
+target_user_id = 4
+target_user_index = user_item_matrix.index.get_loc(target_user_id)
+user_similarities = user_similarity[target_user_index]
+similar_user_indices = user_similarities.argsort()[::-1][1:]
+recommend_items = []
+for user_index in similar_user_indices:
+    rated_by_similar_user = user_item_matrix.iloc[user_index]
+    not_rated_by_target_user = (rated_by_similar_user==0) & (user_item_matrix.iloc[target_user_index]==0)
+    recommend_items.extend(user_item_matrix.columns[not_rated_by_target_user][:10])
+recommended_items_details = data[data['ProdID'].isin(recommend_items)][['Name','ReviewCount','Brand','ImageURL','Rating']]
+recommended_items_details.head(10)
+#Function That Recommend Items
+def collaborative_filtering_recommendations(data, target_user_id, top_n=10):
+    # Create the user-item matrix
+    user_item_matrix = data.pivot_table(index='ID', columns='ProdID', values='Rating', aggfunc='mean').fillna(0)
+    # Calculate the user similarity matrix using cosine similarity
+    user_similarity = cosine_similarity(user_item_matrix)
+    # Find the index of the target user in the matrix
+    target_user_index = user_item_matrix.index.get_loc(target_user_id)
+    # Get the similarity scores for the target user
+    user_similarities = user_similarity[target_user_index]
+    # Sort the users by similarity in descending order (excluding the target user)
+    similar_users_indices = user_similarities.argsort()[::-1][1:]
+    # Generate recommendations based on similar users
+    recommended_items = []
+    for user_index in similar_users_indices:
+        # Get items rated by the similar user but not by the target user
+        rated_by_similar_user = user_item_matrix.iloc[user_index]
+        not_rated_by_target_user = (rated_by_similar_user == 0) & (user_item_matrix.iloc[target_user_index] == 0)
+        # Extract the item IDs of recommended items
+        recommended_items.extend(user_item_matrix.columns[not_rated_by_target_user][:top_n])
+    # Get the details of recommended items
+    recommended_items_details = data[data['ProdID'].isin(recommended_items)][['Name', 'ReviewCount', 'Brand', 'ImageURL', 'Rating']]
+    return recommended_items_details.head(10)
+# Example usage
+target_user_id = 4
+top_n = 5
+collaborative_filtering_rec = collaborative_filtering_recommendations(data, target_user_id)
+print(f"Top {top_n} recommendations for User {target_user_id}:")
+collaborative_filtering_rec
+# Hybrid Recommendations (Combine Content-Based and Collaborative Filtering)
+def hybrid_recommendations(data,target_user_id, item_name, top_n=10):
+    # Get content-based recommendations
+    content_based_rec = content_based_recommendations(data,item_name, top_n)
+    # Get collaborative filtering recommendations
+    collaborative_filtering_rec = collaborative_filtering_recommendations(data,target_user_id, top_n)
+      # Merge and deduplicate the recommendations
+    hybrid_rec = pd.concat([content_based_rec, collaborative_filtering_rec]).drop_duplicates()
+     return hybrid_rec.head(10)
+# Example usage: Get hybrid recommendations for a specific user and item
+target_user_id = 4 # Change this to the user_id you want recommendations for
+item_name = "OPI Nail Lacquer Polish .5oz/15mL - This Gown Needs A Crown NL U11"  # Change this to the item name
+hybrid_rec = hybrid_recommendations(data,target_user_id, item_name, top_n=10)
+print(f"Top 10 Hybrid Recommendations for User {target_user_id} and Item '{item_name}':")
+hybrid_rec
